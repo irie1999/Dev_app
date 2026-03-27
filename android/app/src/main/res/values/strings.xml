@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Yumeiro</string>
+    <string name="title_activity_main">Yumeiro</string>
+    <string name="package_name">com.yumeiro.app</string>
+    <string name="custom_url_scheme">com.yumeiro.app</string>
+</resources>
