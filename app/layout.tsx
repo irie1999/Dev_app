@@ -1,10 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import PwaRegister from "@/components/PwaRegister";
+import BottomNav from "@/components/BottomNav";
 
 export const metadata: Metadata = {
   title: "Yumeiro - 眠れない夜のための映像",
-  description: "眠れない夜に、見ていて気持ちの良い映像をお届けします。雨、海、焚き火、森、宇宙など、癒しの映像でゆっくりお休みください。",
+  description: "眠れない夜に、見ていて気持ちの良い映像をお届けします。",
   manifest: "/manifest.json",
   appleWebApp: {
     capable: true,
@@ -38,7 +39,8 @@ export default function RootLayout({
     <html lang="ja" className="h-full antialiased">
       <body className="min-h-full flex flex-col bg-[#0a0a0f] text-white">
         <PwaRegister />
-        {children}
+        <div className="flex-1 pb-16">{children}</div>
+        <BottomNav />
       </body>
     </html>
   );
