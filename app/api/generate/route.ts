@@ -1,70 +1,71 @@
 import { NextRequest, NextResponse } from "next/server";
-import { Client } from "@gradio/client";
+import crypto from "crypto";
 
-export const maxDuration = 60;
+export const maxDuration = 30;
 
-// Official HF Space IDs (owner/name) — @gradio/client resolves URLs automatically
-const SPACE_IDS: Record<string, string> = {
-  "ltx-video": "Lightricks/LTX-Video-Playground",
-  "cogvideo":  "THUDM/CogVideoX-5B-Space",
-};
+// ── Kling JWT (HS256) ─────────────────────────────────────────────────
+function makeKlingJWT(accessKey: string, secretKey: string): string {
+  const b64url = (obj: unknown) =>
+    Buffer.from(JSON.stringify(obj)).toString("base64url");
 
+  const now = Math.floor(Date.now() / 1000);
+  const header  = b64url({ alg: "HS256", typ: "JWT" });
+  const payload = b64url({ iss: accessKey, exp: now + 1800, nbf: now - 5 });
+  const sig = crypto
+    .createHmac("sha256", secretKey)
+    .update(`${header}.${payload}`)
+    .digest("base64url");
+
+  return `${header}.${payload}.${sig}`;
+}
+
+// ── Route ─────────────────────────────────────────────────────────────
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, model } = await req.json() as { prompt: string; model: string };
-    const spaceId = SPACE_IDS[model] ?? SPACE_IDS["ltx-video"];
+    const { prompt, model, accessKey, secretKey } = await req.json() as {
+      prompt: string;
+      model: string;
+      accessKey: string;
+      secretKey: string;
+    };
 
-    // Connect — @gradio/client handles sleeping spaces, URL resolution, version detection
-    const client = await Client.connect(spaceId);
-
-    // Discover API: find the first endpoint and its parameters
-    const api = await client.view_api();
-    const endpointName = Object.keys(api.named_endpoints)[0];
-    if (!endpointName) throw new Error("このスペースに利用可能な API エンドポイントがありません");
-
-    const endpoint = api.named_endpoints[endpointName];
-
-    // Build params: inject prompt for text inputs, use defaults for everything else
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const params = endpoint.parameters.map((p: any) => {
-      const isPromptField =
-        p.component === "Textbox" ||
-        String(p.label ?? "").toLowerCase().includes("prompt");
-      if (isPromptField) return prompt;
-      return p.parameter_has_default ? p.parameter_default : null;
-    });
-
-    // Run prediction
-    const result = await client.predict(endpointName, params);
-    const output = (result.data as unknown[])[0];
-
-    // Extract video URL from various Gradio output shapes
-    let videoUrl: string | null = null;
-    if (typeof output === "string" && output.startsWith("http")) {
-      videoUrl = output;
-    } else if (output && typeof output === "object") {
-      const obj = output as Record<string, unknown>;
-      const nested = obj.video as Record<string, unknown> | undefined;
-      videoUrl =
-        (typeof obj.url === "string" ? obj.url : null) ??
-        (typeof obj.path === "string" ? obj.path : null) ??
-        (typeof nested?.url === "string" ? nested.url : null) ??
-        null;
+    if (!accessKey || !secretKey) {
+      return NextResponse.json({ error: "Kling API キーが必要です" }, { status: 401 });
     }
 
-    if (!videoUrl) throw new Error("動画 URL が取得できませんでした。スペースの出力形式が予期せぬ形式です。");
+    const jwt = makeKlingJWT(accessKey, secretKey);
 
-    // Fetch video binary and proxy to client
-    const fullUrl = videoUrl.startsWith("http") ? videoUrl : `https://${spaceId.replace("/", "-").toLowerCase()}.hf.space${videoUrl}`;
-    const videoRes = await fetch(fullUrl);
-    if (!videoRes.ok) throw new Error(`動画ダウンロード失敗 (${videoRes.status})`);
-
-    const buffer = await videoRes.arrayBuffer();
-    return new NextResponse(buffer, {
-      headers: { "Content-Type": videoRes.headers.get("Content-Type") ?? "video/mp4" },
+    const res = await fetch("https://api.klingai.com/v1/videos/text2video", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${jwt}`,
+      },
+      body: JSON.stringify({
+        model,
+        prompt,
+        cfg_scale: 0.5,
+        mode: "std",
+        aspect_ratio: "16:9",
+        duration: "5",
+      }),
     });
+
+    const data = await res.json() as {
+      code: number;
+      message: string;
+      data?: { task_id: string };
+    };
+
+    if (data.code !== 0 || !data.data?.task_id) {
+      return NextResponse.json(
+        { error: `Kling エラー: ${data.message} (code ${data.code})` },
+        { status: 400 },
+      );
+    }
+
+    return NextResponse.json({ task_id: data.data.task_id });
   } catch (e) {
-    const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ error: msg }, { status: 500 });
+    return NextResponse.json({ error: String(e) }, { status: 500 });
   }
 }
