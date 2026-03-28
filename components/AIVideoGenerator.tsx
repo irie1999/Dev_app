@@ -16,24 +16,40 @@ const MODELS = [
   },
 ] as const;
 
-// ── Suggested prompts ────────────────────────────────────────────────
+// ── Suggested prompts (Japanese, auto-translated on generate) ────────
 const SUGGESTIONS = [
-  { label: "雨夜",   prompt: "gentle rain falling on a window at night, calm, cinematic" },
-  { label: "焚き火", prompt: "close-up of crackling campfire flames, dark background, warm glow" },
-  { label: "雪景色", prompt: "snowflakes slowly falling in a dark peaceful forest, winter night" },
-  { label: "星空",   prompt: "starry night sky with milky way, slow timelapse, deep space" },
-  { label: "穏やかな海", prompt: "calm ocean waves gently rolling at sunset, golden light reflection" },
-  { label: "蛍",     prompt: "fireflies glowing in a dark summer forest, magical, dreamy" },
-  { label: "桜",     prompt: "cherry blossom petals falling gently in slow motion, pink, serene" },
-  { label: "竹林",   prompt: "bamboo forest swaying gently in the breeze, green, tranquil" },
+  { label: "雨夜",       prompt: "静かな夜、窓に打ち付ける雨、幻想的な光" },
+  { label: "焚き火",     prompt: "暗闇の中でゆらめく焚き火、暖かいオレンジの炎" },
+  { label: "雪景色",     prompt: "静かな森に静かに降り積もる雪、冬の夜" },
+  { label: "星空",       prompt: "天の川が広がる満天の星空、深宇宙の静寂" },
+  { label: "穏やかな海", prompt: "夕暮れの穏やかな海、波が静かに打ち寄せる" },
+  { label: "蛍",         prompt: "夏の暗い森で幻想的に光る蛍たち" },
+  { label: "桜吹雪",     prompt: "ゆっくりと舞い落ちる桜の花びら、春の優しい風" },
+  { label: "竹林",       prompt: "風にそよぐ竹林、光と影の静かな世界" },
 ];
 
 // ── Types ────────────────────────────────────────────────────────────
 interface VideoItem {
   id: string;
   url: string;
-  prompt: string;
+  prompt: string;        // original (Japanese OK)
+  promptEn: string;      // translated English sent to HF
   createdAt: number;
+}
+
+// ── Japanese detection & translation ────────────────────────────────
+function hasJapanese(text: string): boolean {
+  return /[\u3000-\u9fff\uff00-\uffef]/.test(text);
+}
+
+async function translateToEnglish(text: string): Promise<string> {
+  const url =
+    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=ja|en`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("翻訳サービスに接続できませんでした");
+  const data = await res.json() as { responseData: { translatedText: string }; responseStatus: number };
+  if (data.responseStatus !== 200) throw new Error("翻訳に失敗しました");
+  return data.responseData.translatedText;
 }
 
 // ── HF Inference ─────────────────────────────────────────────────────
@@ -93,6 +109,7 @@ export default function AIVideoGenerator() {
   const [status, setStatus] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
+  const [translatedPrompt, setTranslatedPrompt] = useState("");
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -135,11 +152,20 @@ export default function AIVideoGenerator() {
     setIsLoading(true);
     setError("");
     setStatus("");
+    setTranslatedPrompt("");
 
     try {
-      const blob = await callHF(modelId, p, token, setStatus, ctrl.signal);
+      // Translate Japanese → English if needed
+      let promptEn = p;
+      if (hasJapanese(p)) {
+        setStatus("日本語を翻訳中...");
+        promptEn = await translateToEnglish(p);
+        setTranslatedPrompt(promptEn);
+      }
+
+      const blob = await callHF(modelId, promptEn, token, setStatus, ctrl.signal);
       const url = URL.createObjectURL(blob);
-      const item: VideoItem = { id: crypto.randomUUID(), url, prompt: p, createdAt: Date.now() };
+      const item: VideoItem = { id: crypto.randomUUID(), url, prompt: p, promptEn, createdAt: Date.now() };
       setVideos((prev) => [item, ...prev]);
       setActiveId(item.id);
     } catch (e) {
@@ -202,13 +228,13 @@ export default function AIVideoGenerator() {
 
       {/* ── Prompt Input ─────────────────────────────────────────── */}
       <div className="px-4 mt-5">
-        <p className="text-[10px] text-gray-600 mb-2 tracking-wide">英語で入力すると精度が上がります</p>
+        <p className="text-[10px] text-gray-600 mb-2 tracking-wide">日本語・英語どちらでも入力できます</p>
         <div className="flex gap-2">
           <textarea
             value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
+            onChange={(e) => { setPrompt(e.target.value); setTranslatedPrompt(""); }}
             onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); generate(); } }}
-            placeholder="gentle rain falling at night..."
+            placeholder="静かな夜の雨、窓越しの雨音..."
             rows={2}
             className="flex-1 bg-white/6 border border-white/12 rounded-xl px-4 py-3 text-sm text-white placeholder:text-gray-700 focus:outline-none focus:border-white/30 resize-none"
           />
@@ -236,6 +262,14 @@ export default function AIVideoGenerator() {
             )}
           </button>
         </div>
+
+        {/* Translation preview */}
+        {translatedPrompt && (
+          <div className="mt-2 flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">
+            <span className="text-[9px] text-gray-600 mt-0.5 shrink-0">翻訳</span>
+            <p className="text-[10px] text-gray-400 leading-relaxed">{translatedPrompt}</p>
+          </div>
+        )}
 
         {/* Error */}
         {error && (
@@ -334,8 +368,8 @@ export default function AIVideoGenerator() {
       {/* ── Note ─────────────────────────────────────────────────── */}
       <div className="px-4 mt-5 mb-2">
         <p className="text-[10px] text-gray-800 leading-relaxed">
-          ※ Hugging Face 無料推論を使用。サービス状況により時間がかかる場合があります。
-          生成される映像の長さは 2〜6 秒程度です。
+          ※ 日本語入力は MyMemory で自動翻訳後に生成します。Hugging Face 無料推論を使用。
+          サービス状況により時間がかかる場合があります。生成映像は 2〜6 秒程度です。
         </p>
       </div>
 
