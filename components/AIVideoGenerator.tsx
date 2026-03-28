@@ -4,8 +4,8 @@ import { useState, useRef, useEffect, useCallback } from "react";
 
 // ── Models (HF public Spaces via Gradio) ─────────────────────────────
 const MODELS = [
-  { id: "ltx-video", label: "LTX-Video", sub: "高速・約30秒" },
-  { id: "wan21",     label: "Wan 2.1",   sub: "高品質・約2分" },
+  { id: "ltx-video", label: "LTX-Video",  sub: "高速・約30秒" },
+  { id: "cogvideo",  label: "CogVideoX-5B", sub: "高品質・約2分" },
 ] as const;
 
 // ── Suggested prompts ────────────────────────────────────────────────
