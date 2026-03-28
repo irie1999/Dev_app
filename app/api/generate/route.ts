@@ -4,8 +4,8 @@ export const maxDuration = 60;
 
 // Public HF Spaces (Gradio) — free, no token needed
 const SPACES: Record<string, string> = {
-  "ltx-video":  "https://lightricks-ltx-video.hf.space",
-  "wan21":      "https://multimodalart-wan2-1.hf.space",
+  "ltx-video": "https://lightricks-ltx-video-playground.hf.space",
+  "wan21":     "https://wan-ai-wan2-1.hf.space",
 };
 
 // ── Gradio Space caller ─────────────────────────────────────────────
