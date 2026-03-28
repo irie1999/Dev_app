@@ -6,17 +6,17 @@ import { useState, useRef, useEffect, useCallback } from "react";
 const MODELS = [
   {
     id: "damo-vilab/text-to-video-ms-1.7b",
-    label: "高速（256px・低品質）",
-    desc: "〜30秒",
+    label: "高速",
+    sub: "256px・約30秒",
   },
   {
     id: "THUDM/CogVideoX-2b",
-    label: "高品質（720p・6秒）",
-    desc: "〜2分",
+    label: "高品質",
+    sub: "720p・約2分",
   },
 ] as const;
 
-// ── Suggested prompts (Japanese, auto-translated on generate) ────────
+// ── Suggested prompts ────────────────────────────────────────────────
 const SUGGESTIONS = [
   { label: "雨夜",       prompt: "静かな夜、窓に打ち付ける雨、幻想的な光" },
   { label: "焚き火",     prompt: "暗闇の中でゆらめく焚き火、暖かいオレンジの炎" },
@@ -32,27 +32,26 @@ const SUGGESTIONS = [
 interface VideoItem {
   id: string;
   url: string;
-  prompt: string;        // original (Japanese OK)
-  promptEn: string;      // translated English sent to HF
+  prompt: string;
+  promptEn: string;
   createdAt: number;
 }
 
-// ── Japanese detection & translation ────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────
 function hasJapanese(text: string): boolean {
   return /[\u3000-\u9fff\uff00-\uffef]/.test(text);
 }
 
 async function translateToEnglish(text: string): Promise<string> {
-  const url =
-    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=ja|en`;
-  const res = await fetch(url);
+  const res = await fetch(
+    `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=ja|en`,
+  );
   if (!res.ok) throw new Error("翻訳サービスに接続できませんでした");
   const data = await res.json() as { responseData: { translatedText: string }; responseStatus: number };
   if (data.responseStatus !== 200) throw new Error("翻訳に失敗しました");
   return data.responseData.translatedText;
 }
 
-// ── HF Inference ─────────────────────────────────────────────────────
 async function callHF(
   model: string,
   prompt: string,
@@ -61,20 +60,33 @@ async function callHF(
   signal: AbortSignal,
 ): Promise<Blob> {
   const url = `https://api-inference.huggingface.co/models/${model}`;
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token}`,
+  };
 
   for (let attempt = 0; attempt < 20; attempt++) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
-    onStatus(attempt === 0 ? "リクエスト送信中..." : `生成中... (${attempt + 1}回目)`);
+    onStatus(attempt === 0 ? "リクエスト送信中..." : `生成中... (${attempt + 1})`);
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ inputs: prompt, options: { wait_for_model: true } }),
-      signal,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ inputs: prompt, options: { wait_for_model: true } }),
+        signal,
+      });
+    } catch {
+      throw new Error(
+        "APIに接続できませんでした。\nインターネット接続を確認するか、トークンが正しいか確認してください。",
+      );
+    }
+
+    if (res.status === 401 || res.status === 403) {
+      throw new Error("トークンが無効です。正しい HF トークンを入力してください。");
+    }
 
     if (res.status === 503) {
       const data = await res.json().catch(() => ({})) as { estimated_time?: number };
@@ -85,6 +97,10 @@ async function callHF(
         signal.addEventListener("abort", () => { clearTimeout(t); reject(new DOMException("Aborted", "AbortError")); });
       });
       continue;
+    }
+
+    if (res.status === 404) {
+      throw new Error("このモデルは現在利用できません。別のモデルを選択してください。");
     }
 
     if (!res.ok) {
@@ -100,32 +116,83 @@ async function callHF(
   throw new Error("タイムアウトしました。しばらく後に再試行してください。");
 }
 
+// ── Token Setup Screen ───────────────────────────────────────────────
+function TokenSetup({ onSave }: { onSave: (t: string) => void }) {
+  const [input, setInput] = useState("");
+  return (
+    <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col px-5 pt-16">
+      <div className="text-3xl mb-4 select-none">🔑</div>
+      <h1 className="text-lg font-light tracking-widest mb-2">HF トークンが必要です</h1>
+      <p className="text-sm text-gray-500 leading-relaxed mb-8">
+        AI映像生成には Hugging Face の無料アクセストークンが必要です。
+        アカウント登録・トークン取得はどちらも完全無料です。
+      </p>
+
+      <div className="space-y-4 mb-8">
+        {[
+          { step: "1", text: "huggingface.co にアクセス（無料登録）" },
+          { step: "2", text: "右上アイコン → Settings → Access Tokens" },
+          { step: "3", text: "「New token」→ Read 権限で作成" },
+          { step: "4", text: "表示されたトークンをコピー" },
+        ].map(({ step, text }) => (
+          <div key={step} className="flex items-start gap-3">
+            <span className="w-6 h-6 rounded-full bg-white/10 text-xs flex items-center justify-center shrink-0 mt-0.5">
+              {step}
+            </span>
+            <p className="text-sm text-gray-400">{text}</p>
+          </div>
+        ))}
+      </div>
+
+      <input
+        type="password"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Enter" && input.startsWith("hf_")) onSave(input.trim()); }}
+        placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
+        className="w-full bg-white/6 border border-white/12 rounded-xl px-4 py-3 text-sm text-white placeholder:text-gray-700 focus:outline-none focus:border-white/30 mb-3"
+        autoFocus
+      />
+      <button
+        onClick={() => { if (input.trim()) onSave(input.trim()); }}
+        disabled={!input.startsWith("hf_")}
+        className="w-full py-3 rounded-xl bg-white/12 border border-white/20 text-white text-sm tracking-wide hover:bg-white/20 transition-all disabled:opacity-30 disabled:cursor-not-allowed"
+      >
+        保存して使い始める
+      </button>
+      <p className="text-[10px] text-gray-800 mt-3 text-center">
+        トークンはこのデバイスの localStorage にのみ保存されます
+      </p>
+    </div>
+  );
+}
+
 // ── Main Component ───────────────────────────────────────────────────
 export default function AIVideoGenerator() {
+  const [token, setToken] = useState<string | null>(null); // null = not loaded yet
   const [prompt, setPrompt] = useState("");
   const [modelId, setModelId] = useState<string>(MODELS[0].id);
-  const [token, setToken] = useState("");
-  const [showToken, setShowToken] = useState(false);
   const [status, setStatus] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [translatedPrompt, setTranslatedPrompt] = useState("");
   const [videos, setVideos] = useState<VideoItem[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
+  const [showTokenEdit, setShowTokenEdit] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
 
-  // Persist token in localStorage
   useEffect(() => {
-    const saved = localStorage.getItem("hf_token") ?? "";
-    setToken(saved);
+    setToken(localStorage.getItem("hf_token") ?? "");
   }, []);
-  const handleTokenChange = (v: string) => {
-    setToken(v);
-    localStorage.setItem("hf_token", v);
-  };
 
-  // Auto-play when active video changes
+  const saveToken = useCallback((t: string) => {
+    localStorage.setItem("hf_token", t);
+    setToken(t);
+    setShowTokenEdit(false);
+    setError("");
+  }, []);
+
   useEffect(() => {
     const v = videoRef.current;
     if (!v) return;
@@ -133,17 +200,14 @@ export default function AIVideoGenerator() {
     v.play().catch(() => { /* autoplay may be blocked */ });
   }, [activeId]);
 
-  // Revoke blob URLs on unmount
   useEffect(() => {
-    return () => {
-      videos.forEach((v) => URL.revokeObjectURL(v.url));
-    };
+    return () => { videos.forEach((v) => URL.revokeObjectURL(v.url)); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const generate = useCallback(async () => {
     const p = prompt.trim();
-    if (!p) return;
+    if (!p || !token) return;
 
     abortRef.current?.abort();
     const ctrl = new AbortController();
@@ -155,7 +219,6 @@ export default function AIVideoGenerator() {
     setTranslatedPrompt("");
 
     try {
-      // Translate Japanese → English if needed
       let promptEn = p;
       if (hasJapanese(p)) {
         setStatus("日本語を翻訳中...");
@@ -170,12 +233,21 @@ export default function AIVideoGenerator() {
       setActiveId(item.id);
     } catch (e) {
       if ((e as Error).name === "AbortError") return;
-      setError((e as Error).message ?? "エラーが発生しました");
+      const msg = (e as Error).message ?? "エラーが発生しました";
+      setError(msg);
+      // If auth error, prompt to fix token
+      if (msg.includes("トークン")) setShowTokenEdit(true);
     } finally {
       setIsLoading(false);
       setStatus("");
     }
   }, [prompt, modelId, token]);
+
+  // Still loading token from localStorage
+  if (token === null) return null;
+
+  // No token → show setup
+  if (!token) return <TokenSetup onSave={saveToken} />;
 
   const activeVideo = videos.find((v) => v.id === activeId);
 
@@ -183,10 +255,46 @@ export default function AIVideoGenerator() {
     <div className="min-h-screen bg-[#0a0a0f] text-white flex flex-col">
 
       {/* ── Header ──────────────────────────────────────────────── */}
-      <div className="px-5 pt-12 pb-4">
-        <h1 className="text-xl font-thin tracking-widest text-white/90">AI 映像生成</h1>
-        <p className="text-xs text-gray-600 mt-1 tracking-wide">テキストから映像を無料生成</p>
+      <div className="px-5 pt-12 pb-3 flex items-end justify-between">
+        <div>
+          <h1 className="text-xl font-thin tracking-widest text-white/90">AI 映像生成</h1>
+          <p className="text-xs text-gray-600 mt-0.5 tracking-wide">日本語・英語どちらでも入力できます</p>
+        </div>
+        <button
+          onClick={() => setShowTokenEdit((v) => !v)}
+          className="text-[10px] text-gray-700 hover:text-gray-500 transition-colors flex items-center gap-1 pb-1"
+        >
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+          </svg>
+          トークン
+        </button>
       </div>
+
+      {/* Token edit inline */}
+      {showTokenEdit && (
+        <div className="mx-4 mb-3 p-3 bg-white/5 border border-white/10 rounded-xl">
+          <p className="text-[10px] text-gray-600 mb-2">HF アクセストークンを更新</p>
+          <div className="flex gap-2">
+            <input
+              type="password"
+              defaultValue={token}
+              id="token-edit-input"
+              placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
+              className="flex-1 bg-white/6 border border-white/12 rounded-lg px-3 py-2 text-xs text-gray-300 placeholder:text-gray-700 focus:outline-none focus:border-white/25"
+            />
+            <button
+              onClick={() => {
+                const v = (document.getElementById("token-edit-input") as HTMLInputElement).value.trim();
+                if (v) saveToken(v);
+              }}
+              className="px-3 py-2 bg-white/10 border border-white/15 rounded-lg text-xs text-white hover:bg-white/20 transition-colors"
+            >
+              保存
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Video Player ─────────────────────────────────────────── */}
       <div className="mx-4 rounded-2xl overflow-hidden bg-black/40 border border-white/8" style={{ aspectRatio: "16/9" }}>
@@ -194,10 +302,7 @@ export default function AIVideoGenerator() {
           <video
             ref={videoRef}
             src={activeVideo.url}
-            loop
-            muted
-            playsInline
-            autoPlay
+            loop muted playsInline autoPlay
             className="w-full h-full object-cover"
           />
         ) : (
@@ -205,30 +310,27 @@ export default function AIVideoGenerator() {
             {isLoading ? (
               <>
                 <div className="w-10 h-10 rounded-full border-2 border-white/20 border-t-white/80 animate-spin" />
-                <p className="text-xs tracking-wide text-gray-500">{status || "生成中..."}</p>
+                <p className="text-xs tracking-wide text-gray-500 text-center px-4">{status || "生成中..."}</p>
               </>
             ) : (
               <>
                 <svg className="w-10 h-10 opacity-30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1} d="M15 10l4.553-2.277A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z" />
                 </svg>
-                <p className="text-xs opacity-40">生成した映像がここに表示されます</p>
+                <p className="text-xs opacity-30">生成した映像がここに表示されます</p>
               </>
             )}
           </div>
         )}
       </div>
 
-      {/* Loading status bar */}
-      {isLoading && activeVideo === undefined && (
-        <div className="mx-4 mt-2 text-center">
-          <p className="text-xs text-gray-500 tracking-wide">{status}</p>
-        </div>
+      {/* Status while video is playing too (still generating next) */}
+      {isLoading && status && (
+        <p className="mx-4 mt-1.5 text-[10px] text-gray-600 text-center">{status}</p>
       )}
 
       {/* ── Prompt Input ─────────────────────────────────────────── */}
-      <div className="px-4 mt-5">
-        <p className="text-[10px] text-gray-600 mb-2 tracking-wide">日本語・英語どちらでも入力できます</p>
+      <div className="px-4 mt-4">
         <div className="flex gap-2">
           <textarea
             value={prompt}
@@ -241,9 +343,9 @@ export default function AIVideoGenerator() {
           <button
             onClick={isLoading ? () => abortRef.current?.abort() : generate}
             disabled={!isLoading && !prompt.trim()}
-            className={`px-4 rounded-xl text-sm font-medium transition-all flex flex-col items-center justify-center gap-1 min-w-[64px] ${
+            className={`px-4 rounded-xl text-sm font-medium transition-all flex flex-col items-center justify-center gap-1 min-w-[60px] ${
               isLoading
-                ? "bg-red-900/40 border border-red-500/30 text-red-400 hover:bg-red-900/60"
+                ? "bg-red-900/40 border border-red-500/30 text-red-400"
                 : "bg-white/10 border border-white/15 text-white hover:bg-white/20 disabled:opacity-30 disabled:cursor-not-allowed"
             }`}
           >
@@ -266,16 +368,16 @@ export default function AIVideoGenerator() {
         {/* Translation preview */}
         {translatedPrompt && (
           <div className="mt-2 flex items-start gap-2 bg-white/5 rounded-lg px-3 py-2">
-            <span className="text-[9px] text-gray-600 mt-0.5 shrink-0">翻訳</span>
+            <span className="text-[9px] text-gray-600 mt-0.5 shrink-0">EN</span>
             <p className="text-[10px] text-gray-400 leading-relaxed">{translatedPrompt}</p>
           </div>
         )}
 
         {/* Error */}
         {error && (
-          <p className="mt-2 text-xs text-red-400/80 bg-red-900/20 rounded-lg px-3 py-2 leading-relaxed">
-            {error}
-          </p>
+          <div className="mt-2 bg-red-900/20 border border-red-500/20 rounded-xl px-3 py-2.5">
+            <p className="text-xs text-red-400/90 leading-relaxed whitespace-pre-line">{error}</p>
+          </div>
         )}
       </div>
 
@@ -285,7 +387,7 @@ export default function AIVideoGenerator() {
           {SUGGESTIONS.map((s) => (
             <button
               key={s.label}
-              onClick={() => setPrompt(s.prompt)}
+              onClick={() => { setPrompt(s.prompt); setTranslatedPrompt(""); setError(""); }}
               className="px-3 py-1.5 rounded-full bg-white/6 border border-white/10 text-gray-400 text-xs hover:text-white hover:bg-white/12 transition-all"
             >
               {s.label}
@@ -296,68 +398,40 @@ export default function AIVideoGenerator() {
 
       {/* ── Model Selector ───────────────────────────────────────── */}
       <div className="px-4 mt-4">
-        <p className="text-[10px] text-gray-600 mb-2 tracking-wide">モデル選択</p>
         <div className="flex gap-2">
           {MODELS.map((m) => (
             <button
               key={m.id}
               onClick={() => setModelId(m.id)}
-              className={`flex-1 py-2 rounded-xl border text-xs transition-all text-left px-3 ${
+              className={`flex-1 py-2 rounded-xl border text-xs transition-all px-3 ${
                 modelId === m.id
                   ? "bg-white/12 border-white/25 text-white"
                   : "bg-white/4 border-white/8 text-gray-600 hover:text-gray-400"
               }`}
             >
               <div className="font-medium">{m.label}</div>
-              <div className="opacity-60 text-[10px] mt-0.5">{m.desc}</div>
+              <div className="opacity-50 text-[10px] mt-0.5">{m.sub}</div>
             </button>
           ))}
         </div>
       </div>
 
-      {/* ── HF Token (optional) ──────────────────────────────────── */}
-      <div className="px-4 mt-3">
-        <button
-          onClick={() => setShowToken((v) => !v)}
-          className="text-[10px] text-gray-700 hover:text-gray-500 transition-colors flex items-center gap-1"
-        >
-          <svg className={`w-3 h-3 transition-transform ${showToken ? "rotate-90" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-          </svg>
-          Hugging Face トークン（省略可・速度向上）
-        </button>
-        {showToken && (
-          <div className="mt-2">
-            <input
-              type="password"
-              value={token}
-              onChange={(e) => handleTokenChange(e.target.value)}
-              placeholder="hf_xxxxxxxxxxxxxxxxxxxx"
-              className="w-full bg-white/5 border border-white/10 rounded-lg px-3 py-2 text-xs text-gray-400 placeholder:text-gray-800 focus:outline-none focus:border-white/20"
-            />
-            <p className="text-[9px] text-gray-800 mt-1">
-              huggingface.co → Settings → Access Tokens で取得（無料）
-            </p>
-          </div>
-        )}
-      </div>
-
       {/* ── History ──────────────────────────────────────────────── */}
       {videos.length > 1 && (
         <div className="px-4 mt-5">
-          <p className="text-[10px] text-gray-600 mb-3 tracking-wide">生成履歴（このセッションのみ）</p>
+          <p className="text-[10px] text-gray-700 mb-2 tracking-wide">生成履歴</p>
           <div className="grid grid-cols-3 gap-2">
             {videos.map((v) => (
               <button
                 key={v.id}
                 onClick={() => setActiveId(v.id)}
                 className={`relative rounded-xl overflow-hidden aspect-video transition-all ${
-                  activeId === v.id ? "ring-2 ring-white/60" : "ring-1 ring-white/10 opacity-60 hover:opacity-90"
+                  activeId === v.id ? "ring-2 ring-white/50" : "ring-1 ring-white/8 opacity-50 hover:opacity-80"
                 }`}
               >
                 <video src={v.url} muted playsInline className="w-full h-full object-cover" />
-                <div className="absolute inset-0 bg-black/30 flex items-end p-1">
-                  <span className="text-[8px] text-white/70 leading-tight line-clamp-2">{v.prompt}</span>
+                <div className="absolute inset-0 bg-black/40 flex items-end p-1">
+                  <span className="text-[8px] text-white/60 leading-tight line-clamp-2">{v.prompt}</span>
                 </div>
               </button>
             ))}
@@ -365,15 +439,7 @@ export default function AIVideoGenerator() {
         </div>
       )}
 
-      {/* ── Note ─────────────────────────────────────────────────── */}
-      <div className="px-4 mt-5 mb-2">
-        <p className="text-[10px] text-gray-800 leading-relaxed">
-          ※ 日本語入力は MyMemory で自動翻訳後に生成します。Hugging Face 無料推論を使用。
-          サービス状況により時間がかかる場合があります。生成映像は 2〜6 秒程度です。
-        </p>
-      </div>
-
-      <div className="h-4" />
+      <div className="h-8" />
     </div>
   );
 }
