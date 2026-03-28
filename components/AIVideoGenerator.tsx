@@ -3,16 +3,17 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 
 // ── Models ───────────────────────────────────────────────────────────
+// Only models that support HF Serverless Inference text-to-video task
 const MODELS = [
   {
-    id: "damo-vilab/text-to-video-ms-1.7b",
-    label: "高速",
-    sub: "256px・約30秒",
+    id: "Lightricks/LTX-Video",
+    label: "LTX-Video",
+    sub: "高速・HF公式対応",
   },
   {
-    id: "THUDM/CogVideoX-2b",
-    label: "高品質",
-    sub: "720p・約2分",
+    id: "Wan-AI/Wan2.1-T2V-1.3B",
+    label: "Wan 2.1",
+    sub: "高品質・約2分",
   },
 ] as const;
 
@@ -75,13 +76,18 @@ async function callHF(
       res = await fetch(url, {
         method: "POST",
         headers,
-        body: JSON.stringify({ inputs: prompt, options: { wait_for_model: true } }),
+        body: JSON.stringify({
+          inputs: prompt,
+          parameters: { num_frames: 25, fps: 8 },
+          options: { wait_for_model: true },
+        }),
         signal,
       });
-    } catch {
-      throw new Error(
-        "APIに接続できませんでした。\nインターネット接続を確認するか、トークンが正しいか確認してください。",
-      );
+    } catch (fetchErr) {
+      const msg = fetchErr instanceof TypeError
+        ? `接続失敗: ${model} への通信ができませんでした。\nトークンが正しいか確認してください。\n(${String(fetchErr)})`
+        : "APIに接続できませんでした。インターネット接続を確認してください。";
+      throw new Error(msg);
     }
 
     if (res.status === 401 || res.status === 403) {
