@@ -53,46 +53,25 @@ async function translateToEnglish(text: string): Promise<string> {
   return data.responseData.translatedText;
 }
 
-async function callHF(
+// Proxy through /api/generate (server-side) to avoid CORS
+async function callGenerate(
   model: string,
   prompt: string,
   token: string,
   onStatus: (s: string) => void,
   signal: AbortSignal,
 ): Promise<Blob> {
-  const url = `https://api-inference.huggingface.co/models/${model}`;
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Authorization": `Bearer ${token}`,
-  };
-
   for (let attempt = 0; attempt < 20; attempt++) {
     if (signal.aborted) throw new DOMException("Aborted", "AbortError");
 
     onStatus(attempt === 0 ? "リクエスト送信中..." : `生成中... (${attempt + 1})`);
 
-    let res: Response;
-    try {
-      res = await fetch(url, {
-        method: "POST",
-        headers,
-        body: JSON.stringify({
-          inputs: prompt,
-          parameters: { num_frames: 25, fps: 8 },
-          options: { wait_for_model: true },
-        }),
-        signal,
-      });
-    } catch (fetchErr) {
-      const msg = fetchErr instanceof TypeError
-        ? `接続失敗: ${model} への通信ができませんでした。\nトークンが正しいか確認してください。\n(${String(fetchErr)})`
-        : "APIに接続できませんでした。インターネット接続を確認してください。";
-      throw new Error(msg);
-    }
-
-    if (res.status === 401 || res.status === 403) {
-      throw new Error("トークンが無効です。正しい HF トークンを入力してください。");
-    }
+    const res = await fetch("/api/generate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ prompt, model, token }),
+      signal,
+    });
 
     if (res.status === 503) {
       const data = await res.json().catch(() => ({})) as { estimated_time?: number };
@@ -105,15 +84,9 @@ async function callHF(
       continue;
     }
 
-    if (res.status === 404) {
-      throw new Error("このモデルは現在利用できません。別のモデルを選択してください。");
-    }
-
     if (!res.ok) {
-      const text = await res.text();
-      let msg = text;
-      try { msg = (JSON.parse(text) as { error: string }).error ?? text; } catch { /* ignore */ }
-      throw new Error(msg);
+      const data = await res.json().catch(() => ({ error: "不明なエラー" })) as { error?: string };
+      throw new Error(data.error ?? "生成に失敗しました");
     }
 
     return await res.blob();
@@ -232,7 +205,7 @@ export default function AIVideoGenerator() {
         setTranslatedPrompt(promptEn);
       }
 
-      const blob = await callHF(modelId, promptEn, token, setStatus, ctrl.signal);
+      const blob = await callGenerate(modelId, promptEn, token, setStatus, ctrl.signal);
       const url = URL.createObjectURL(blob);
       const item: VideoItem = { id: crypto.randomUUID(), url, prompt: p, promptEn, createdAt: Date.now() };
       setVideos((prev) => [item, ...prev]);
